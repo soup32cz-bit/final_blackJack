@@ -201,7 +201,7 @@ contract BlackJack {
                 emit GameFinished(playerAddr);
             } else if (getHandValue(player.hand) == dealerValue) {
                 // Push, return bet
-                payable(playerAddr).transfer(player.bet);
+                payable(playerAddr).transfer(player.bet);  // 4
             } else {
                 // Player loses
             }
