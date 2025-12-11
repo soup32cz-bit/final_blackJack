@@ -207,4 +207,13 @@ contract BlackJack {
             }
         }
     }
+
+    // --- Getter Functions ---
+    function getDealerHand() public view returns (Card[] memory) {
+        return dealerHand;
+    }
+
+    function getPlayerHand(address player) public view returns (Card[] memory) {
+        return players[player].hand;
+    }
 }

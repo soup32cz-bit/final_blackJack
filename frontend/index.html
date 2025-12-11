@@ -54,6 +54,18 @@
                     <h2 class="text-xl font-bold">Dealer's Hand</h2>
                     <div id="dealer-hand" class="my-4"></div>
                 </div>
+
+                <!-- Score Board -->
+                <div id="score-board" class="text-center">
+                    <h3 class="text-lg font-semibold mb-2">คะแนน</h3>
+                    <div class="grid grid-cols-2 gap-4 text-lg">
+                        <div class="text-right font-bold">Dealer:</div>
+                        <div id="dealer-score" class="text-left">0</div>
+                        <div class="text-right font-bold">Player:</div>
+                        <div id="player-score" class="text-left">0</div>
+                    </div>
+                </div>
+
                 <div>
                     <h2 class="text-xl font-bold">Player's Hand</h2>
                     <div id="player-hand" class="my-4"></div>
@@ -120,7 +132,8 @@
         const startGameButton = document.getElementById('start-game-button');
         const blackjackActions = document.getElementById('blackjack-actions');
         const hitButton = document.getElementById('action-hit');
-        const standButton = document.getElementById('action-stand');
+        const dealerScoreDisplay = document.getElementById('dealer-score');
+        const playerScoreDisplay = document.getElementById('player-score');
 
 
         // --- Web3 State ---
@@ -201,61 +214,125 @@
             messageLog.scrollTop = messageLog.scrollHeight;
         }
 
-        function createCard(card) {
+        function getHandValue(hand) {
+            let value = 0;
+            let numAces = 0;
+            for (const card of hand) {
+                const rank = Number(card.rank);
+                if (rank >= 11 && rank <= 13) { // J, Q, K
+                    value += 10;
+                } else if (rank === 14) { // Ace
+                    numAces++;
+                    value += 11;
+                } else {
+                    value += rank;
+                }
+            }
+            while (value > 21 && numAces > 0) {
+                value -= 10;
+                numAces--;
+            }
+            return value;
+        }
+
+        function createCard(card, isFaceDown = false) {
             const cardElement = document.createElement('div');
             cardElement.classList.add('card');
-            let rank;
-            switch(card.rank) {
-                case 11: rank = 'J'; break;
-                case 12: rank = 'Q'; break;
-                case 13: rank = 'K'; break;
-                case 14: rank = 'A'; break;
-                default: rank = card.rank.toString();
+            if (isFaceDown) {
+                 cardElement.style.backgroundColor = 'red'; // Back of card
+                 cardElement.textContent = '';
+            } else {
+                let rank;
+                switch(Number(card.rank)) {
+                    case 11: rank = 'J'; break;
+                    case 12: rank = 'Q'; break;
+                    case 13: rank = 'K'; break;
+                    case 14: rank = 'A'; break;
+                    default: rank = card.rank.toString();
+                }
+                cardElement.textContent = rank;
             }
-            cardElement.textContent = rank;
             return cardElement;
         }
 
         async function updateUI() {
-            if (!contract) return;
+            if (!contract || !userAddress) return;
 
-            const player = await contract.players(userAddress);
-            playerHandDisplay.innerHTML = '';
-            player.hand.forEach(card => playerHandDisplay.appendChild(createCard(card)));
+            try {
+                // Fetch all data in parallel
+                const [playerData, rawDealerHand, gameState] = await Promise.all([
+                    contract.players(userAddress),
+                    contract.dealerHand(),
+                    contract.gameState()
+                ]);
+                
+                const playerHand = playerData.hand;
 
-            const dealerHand = await contract.dealerHand();
-            dealerHandDisplay.innerHTML = '';
-            dealerHand.forEach(card => dealerHandDisplay.appendChild(createCard(card)));
+                // Update player's hand and score
+                playerHandDisplay.innerHTML = '';
+                playerHand.forEach(card => playerHandDisplay.appendChild(createCard(card)));
+                const playerScore = getHandValue(playerHand);
+                playerScoreDisplay.textContent = playerScore;
+
+                if (playerScore > 21) {
+                    logMessage("คุณแต้มเกิน 21 (Bust)!");
+                    blackjackActions.classList.add('hidden');
+                }
+
+                // Update dealer's hand and score based on game state
+                dealerHandDisplay.innerHTML = '';
+                const GameState = { Betting: 0, PlayerTurn: 1, DealerTurn: 2, Finished: 3 };
+
+                if (gameState == GameState.PlayerTurn && rawDealerHand.length > 0) {
+                    // Player's turn: show one card face up, one face down
+                    dealerHandDisplay.appendChild(createCard(rawDealerHand[0]));
+                    dealerHandDisplay.appendChild(createCard(null, true)); // Face-down card
+                    
+                    // Show score of only the visible card
+                    dealerScoreDisplay.textContent = `${getHandValue([rawDealerHand[0]])} + ?`;
+                } else {
+                    // Dealer's turn or game finished: show all cards and final score
+                    rawDealerHand.forEach(card => dealerHandDisplay.appendChild(createCard(card)));
+                    dealerScoreDisplay.textContent = getHandValue(rawDealerHand);
+                }
+
+            } catch (error) {
+                console.error("Failed to update UI:", error);
+                logMessage("เกิดข้อผิดพลาดในการอัปเดตข้อมูลเกม");
+            }
         }
 
         async function handleJoinGame() {
             if(!contract) return;
             try {
                 const tx = await contract.joinGame();
+                logMessage("กำลังส่งคำขอเข้าร่วมเกม...");
                 await tx.wait();
                 logMessage("เข้าร่วมเกมสำเร็จ!");
                 placeBetButton.disabled = false;
                 startGameButton.disabled = false;
             } catch (error) {
                 console.error(error);
-                logMessage("การเข้าร่วมเกมล้มเหลว");
+                logMessage(error.reason || "การเข้าร่วมเกมล้มเหลว");
             }
         }
 
         async function handlePlaceBet() {
             if(!contract) return;
             const amount = betAmountInput.value;
-            if (!amount) {
-                logMessage("กรุณาใส่จำนวนเงินเดิมพัน");
+            if (!amount || parseFloat(amount) <= 0) {
+                logMessage("กรุณาใส่จำนวนเงินเดิมพันที่ถูกต้อง");
                 return;
             }
             try {
-                const tx = await contract.placeBet(ethers.parseEther(amount), { value: ethers.parseEther(amount) });
+                const value = ethers.parseEther(amount);
+                const tx = await contract.placeBet(value, { value });
+                logMessage("กำลังวางเดิมพัน...");
                 await tx.wait();
                 logMessage(`วางเดิมพันสำเร็จ: ${amount} ETH`);
             } catch (error) {
                 console.error(error);
-                logMessage("การวางเดิมพันล้มเหลว");
+                logMessage(error.reason || "การวางเดิมพันล้มเหลว");
             }
         }
 
@@ -263,13 +340,17 @@
             if(!contract) return;
             try {
                 const tx = await contract.startGame();
+                logMessage("กำลังเริ่มเกม...");
                 await tx.wait();
-                logMessage("เกมเริ่มแล้ว!");
+                logMessage("เกมเริ่มแล้ว! ขอให้โชคดี");
                 blackjackActions.classList.remove('hidden');
-                updateUI();
+                joinGameButton.disabled = true;
+                placeBetButton.disabled = true;
+                startGameButton.disabled = true;
+                await updateUI();
             } catch (error) {
                 console.error(error);
-                logMessage("การเริ่มเกมล้มเหลว");
+                logMessage(error.reason || "การเริ่มเกมล้มเหลว");
             }
         }
 
@@ -277,12 +358,13 @@
             if(!contract) return;
             try {
                 const tx = await contract.hit();
+                logMessage("คุณเลือก Hit, กำลังจั่วไพ่...");
                 await tx.wait();
-                logMessage("คุณ Hit!");
-                updateUI();
+                logMessage("จั่วไพ่สำเร็จ!");
+                await updateUI();
             } catch (error) {
                 console.error(error);
-                logMessage("การ Hit ล้มเหลว");
+                logMessage(error.reason || "การ Hit ล้มเหลว");
             }
         }
 
@@ -290,24 +372,49 @@
             if(!contract) return;
             try {
                 const tx = await contract.stand();
-                await tx.wait();
-                logMessage("คุณ Stand!");
+                logMessage("คุณเลือก Stand, รอ Dealer เล่น...");
                 blackjackActions.classList.add('hidden');
+                await tx.wait();
+                logMessage("Dealer เล่นจบแล้ว");
+                // The contract events will trigger the final outcome message
+                // We just update the UI to show the final hands and scores
+                await updateUI();
             } catch (error) {
                 console.error(error);
-                logMessage("การ Stand ล้มเหลว");
+                logMessage(error.reason || "การ Stand ล้มเหลว");
             }
         }
 
         function listenToEvents() {
             if (!contract) return;
-            contract.on("GameFinished", (winner) => {
-                logMessage(`เกมจบแล้ว! ผู้ชนะคือ: ${winner}`);
+            contract.on("GameFinished", (winner, amount) => {
+                 // UI update will be handled by the stand/bust logic, this is for the final message
+                logMessage("เกมจบแล้ว!");
+                updateUI(); // Final update to show all cards
                 if (winner === userAddress) {
+                    logMessage(`ยินดีด้วย! คุณชนะและได้รับ ${ethers.formatEther(amount)} ETH`);
                     alert("คุณชนะ!");
                 } else {
+                    logMessage("น่าเสียดาย, คุณแพ้ในรอบนี้");
                     alert("คุณแพ้!");
                 }
+                 // Reset buttons for next game
+                joinGameButton.disabled = false;
+                placeBetButton.disabled = false;
+                startGameButton.disabled = false;
+                betAmountInput.value = '';
+            });
+
+             contract.on("PlayerHit", (player, card) => {
+                if (player === userAddress) {
+                    const rank = Number(card.rank) > 10 ? card.rank === 14 ? 'A' : 'J/Q/K' : card.rank;
+                    logMessage(`คุณได้รับไพ่: ${rank}`);
+                }
+            });
+
+            contract.on("DealerHit", (dealer, card) => {
+                const rank = Number(card.rank) > 10 ? card.rank === 14 ? 'A' : 'J/Q/K' : card.rank;
+                logMessage(`Dealer จั่วได้ไพ่: ${rank}`);
             });
         }
 
@@ -323,7 +430,42 @@
         window.addEventListener('DOMContentLoaded', () => {
             logMessage("กรุณาเชื่อมต่อ Wallet เพื่อเริ่มเกม");
         });
+		
+		 const contractABI = [
+    // ... (keep all other ABI entries)
+    "event GameFinished(address indexed winner, uint256 amount)", // Make sure amount is included
+    // ...
+];
 
-    </script>
+function listenToEvents() {
+    // ...
+    contract.on("GameFinished", (winner, amount) => {
+        logMessage("เกมจบแล้ว!");
+        updateUI(); // Final update
+
+        const winAmount = ethers.formatEther(amount);
+        if (winner === userAddress) {
+            if (amount > 0) {
+                 logMessage(`ยินดีด้วย! คุณชนะและได้รับ ${winAmount} ETH`);
+                 alert(`คุณชนะ! ได้รับ ${winAmount} ETH`);
+            } else {
+                 logMessage("เสมอ! คุณได้รับเงินเดิมพันคืน");
+                 alert("เสมอ!");
+            }
+        } else {
+            logMessage("น่าเสียดาย, คุณแพ้ในรอบนี้");
+            alert("คุณแพ้!");
+        }
+        
+        // Reset UI for the next round
+        blackjackActions.classList.add('hidden');
+        joinGameButton.disabled = false;
+        placeBetButton.disabled = false;
+        startGameButton.disabled = false;
+        betAmountInput.value = '';
+    });
+    // ...
+}
+
 </body>
 </html>
